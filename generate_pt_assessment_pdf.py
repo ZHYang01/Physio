@@ -1,211 +1,30 @@
 #!/usr/bin/env python3
-"""Generate Geriatric PT Outcome Measures Assessment Booklet PDF (v2).
+"""Generate Geriatric PT Outcome Measures Assessment Booklet PDF — Chinese (v3.1).
 
-Changes vs v1:
-  - Added 一、病史记录 (history-taking) section
-  - Added 九-F、Berg 平衡量表 (BBS) — additional balance scale
-  - Removed cover subtitle "首次评估与效果跟进 Outcome Measure 集合"
-  - Visual refresh: accent-color banner headers, colored table headers,
-    zebra row striping, refined cover & footer
+中文版评估手册，与英文版对齐。共享布局引擎在 core.py。
 """
 
 import os
 import argparse
-from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, PageBreak,
-                                 Table, TableStyle)
+from reportlab.platypus import Paragraph, Spacer, PageBreak, Table, TableStyle
 from reportlab.platypus.flowables import HRFlowable
 from reportlab.platypus.tableofcontents import TableOfContents
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.pdfmetrics import registerFontFamily
-from reportlab.pdfgen import canvas
 
-# ── Fonts ──
-SONGTI_TTC = '/System/Library/Fonts/Supplemental/Songti.ttc'
-HEITI_TTC  = '/System/Library/Fonts/STHeiti Medium.ttc'
+from core import (
+    ACCENT, ACCENT_DARK, ACCENT_LIGHT, GREY_LINE, GREY_TEXT,
+    BASE_FONT, BOLD_FONT, PAGE_W, PAGE_H, FULL_W,
+    s_cover_title, s_cover_sub, s_banner, s_sub, s_body, s_small,
+    s_large, s_th, s_td, s_td_c, s_note, s_field, s_strip,
+    P, SP, HR, note, section_banner, sub_header, cols, make_table,
+    make_numbered_canvas, TocDocTemplate, toc_style, default_output,
+)
 
-def _register_fonts():
-    """Register Chinese fonts with real bold; family name == normal name."""
-    try:
-        pdfmetrics.registerFont(TTFont('ChineseR', SONGTI_TTC, subfontIndex=6))  # Regular
-        pdfmetrics.registerFont(TTFont('ChineseB', SONGTI_TTC, subfontIndex=1))  # Bold
-        registerFontFamily('ChineseR', normal='ChineseR', bold='ChineseB',
-                           italic='ChineseR', boldItalic='ChineseB')
-        return 'ChineseR', 'ChineseB'
-    except Exception:
-        pass
-    try:
-        pdfmetrics.registerFont(TTFont('ChineseR', HEITI_TTC, subfontIndex=1))
-        pdfmetrics.registerFont(TTFont('ChineseB', HEITI_TTC, subfontIndex=1))
-        registerFontFamily('ChineseR', normal='ChineseR', bold='ChineseB',
-                           italic='ChineseR', boldItalic='ChineseB')
-        return 'ChineseR', 'ChineseB'
-    except Exception:
-        pass
-    return 'Helvetica', 'Helvetica-Bold'
-
-BASE_FONT, BOLD_FONT = _register_fonts()
-
-# ── Palette ──
-ACCENT       = colors.HexColor('#1F5C6B')   # professional teal
-ACCENT_DARK  = colors.HexColor('#15414C')
-ACCENT_LIGHT = colors.HexColor('#EAF1F3')   # very light tint for zebra rows
-GREY_LINE    = colors.HexColor('#B8C4C8')
-GREY_TEXT    = colors.HexColor('#555555')
-TABLE_GREY   = colors.HexColor('#E0E0E0')
-
-PAGE_W, PAGE_H = A4
-FULL_W = 174 * mm  # A4 width minus 18mm margins each side
-
-# ── Styles ──
-def _style(name, fontSize=10, leading=14, alignment=TA_LEFT,
-           textColor=colors.black, fontName=None, **kw):
-    return ParagraphStyle(
-        name,
-        fontName=fontName or BASE_FONT,
-        fontSize=fontSize, leading=leading, alignment=alignment,
-        textColor=textColor,
-        spaceAfter=kw.pop('spaceAfter', 4),
-        spaceBefore=kw.pop('spaceBefore', 2),
-        **kw,
-    )
-
-s_cover_title    = _style('CoverTitle',   fontSize=30, leading=38, alignment=TA_CENTER,
-                          textColor=ACCENT_DARK, spaceAfter=4)
-s_cover_sub      = _style('CoverSub',     fontSize=12, leading=18, alignment=TA_CENTER,
-                          textColor=GREY_TEXT, spaceAfter=20)
-s_banner         = _style('Banner',       fontSize=15, leading=20, alignment=TA_LEFT,
-                          textColor=colors.white, spaceAfter=0, spaceBefore=0)
-s_sub            = _style('Sub',          fontSize=12.5, leading=17, spaceAfter=4,
-                          spaceBefore=6, textColor=ACCENT_DARK)
-s_body           = _style('Body',         fontSize=10, leading=15)
-s_small          = _style('Small',        fontSize=9,  leading=13)
-s_large          = _style('Large',        fontSize=12, leading=18)
-s_th             = _style('TH',           fontSize=9,  leading=12, alignment=TA_CENTER,
-                          textColor=colors.white, fontName=BOLD_FONT)
-s_td             = _style('TD',           fontSize=9,  leading=12)
-s_td_c           = _style('TDc',          fontSize=9,  leading=12, alignment=TA_CENTER)
-s_note           = _style('Note',         fontSize=8,  leading=11, textColor=GREY_TEXT)
-s_field          = _style('Field',        fontSize=10, leading=16)
-s_strip          = _style('Strip',        fontSize=11, leading=15,
-                          textColor=colors.white, fontName=BOLD_FONT, alignment=TA_CENTER)
-
-# ── Helpers ──
-def P(text, style=None): return Paragraph(text, style or s_body)
-def SP(h=6):             return Spacer(1, h)
-def HR(color=GREY_LINE, t=0.5, after=6):
-    return HRFlowable(width='100%', thickness=t, color=color, spaceAfter=after)
-
-def section_banner(num, text, toc=True):
-    """Colored banner header for a section. toc=True registers a TOC entry."""
-    title = f'{num}、{text}' if num else text
-    cell = Paragraph(f'<b>{title}</b>', s_banner)
-    t = Table([[cell]], colWidths=[FULL_W])
-    t.setStyle(TableStyle([
-        ('BACKGROUND',    (0, 0), (-1, -1), ACCENT),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 10),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 10),
-        ('TOPPADDING',    (0, 0), (-1, -1), 7),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
-        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    if toc:
-        t.toc_entry = (0, title)
-    return [t, SP(8)]
-
-def sub_header(text):
-    return [P(f'<b>{text}</b>', s_sub),
-            HRFlowable(width='100%', thickness=0.8, color=ACCENT, spaceAfter=4)]
-
-def note(text):  return P(text, s_note)
-
-def cols(*weights):
-    total = sum(weights)
-    return [w / total * FULL_W for w in weights]
-
-def make_table(data, col_widths=None, header_rows=1, zebra=True):
-    t = Table(data, colWidths=col_widths, repeatRows=header_rows)
-    cmds = [
-        ('GRID',          (0, 0), (-1, -1), 0.5, GREY_LINE),
-        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING',    (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
-        ('FONTNAME',      (0, 0), (-1, -1), BASE_FONT),
-    ]
-    if header_rows > 0:
-        cmds += [
-            ('BACKGROUND', (0, 0), (-1, header_rows - 1), ACCENT),
-            ('FONTNAME',   (0, 0), (-1, header_rows - 1), BOLD_FONT),
-            ('ALIGN',      (0, 0), (-1, header_rows - 1), 'CENTER'),
-            ('TEXTCOLOR',  (0, 0), (-1, header_rows - 1), colors.white),
-            ('LINEBELOW',  (0, header_rows - 1), (-1, header_rows - 1), 1.4, ACCENT_DARK),
-            ('TOPPADDING', (0, 0), (-1, header_rows - 1), 6),
-            ('BOTTOMPADDING',(0,0), (-1, header_rows - 1), 6),
-        ]
-    if zebra:
-        start = header_rows
-        for r in range(start, len(data)):
-            if (r - start) % 2 == 1:
-                cmds.append(('BACKGROUND', (0, r), (-1, r), ACCENT_LIGHT))
-    t.setStyle(TableStyle(cmds))
-    return t
-
-def fill_lines(label, n_lines=1, line_w=60):
-    """Label on first line, then underscore fill lines."""
-    out = [P(f'<b>{label}</b>', s_field)]
-    for _ in range(n_lines):
-        out.append(P('_' * line_w, s_field))
-    return out
-
-# ── Page numbering canvas with accent footer ──
-class NumberedCanvas(canvas.Canvas):
-    def __init__(self, *args, **kwargs):
-        canvas.Canvas.__init__(self, *args, **kwargs)
-        self._saved = []
-
-    def showPage(self):
-        self._saved.append(dict(self.__dict__))
-        self._startPage()
-
-    def save(self):
-        total = len(self._saved)
-        for state in self._saved:
-            self.__dict__.update(state)
-            self._draw_footer(total)
-            canvas.Canvas.showPage(self)
-        canvas.Canvas.save(self)
-
-    def _draw_footer(self, total):
-        # accent rule above footer
-        self.setStrokeColor(ACCENT)
-        self.setLineWidth(0.6)
-        self.line(15 * mm, 16 * mm, PAGE_W - 15 * mm, 16 * mm)
-        self.setFont(BASE_FONT, 8)
-        self.setFillColor(GREY_TEXT)
-        self.drawString(15 * mm, 11 * mm, '老年物理治疗评估工具手册')
-        self.drawCentredString(PAGE_W / 2, 11 * mm, f'— {self._pageNumber} / {total} —')
-        self.drawRightString(PAGE_W - 15 * mm, 11 * mm, '版本 3.0  |  2026')
-        self.setFillColor(colors.black)
-
-
-class TocDocTemplate(SimpleDocTemplate):
-    """SimpleDocTemplate that collects section page numbers for the TOC."""
-    def afterFlowable(self, flowable):
-        if hasattr(flowable, 'toc_entry'):
-            level, label = flowable.toc_entry
-            self.notify('TOCEntry', (level, label, self.page))
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  DOCUMENT
-# ═══════════════════════════════════════════════════════════════════════════
+# CN section banners use、 separator instead of ". "
+def cn_banner(num, text, toc=True):
+    return section_banner(num, text, toc=toc, sep='、')
 
 def build_story():
     story = []
@@ -255,20 +74,18 @@ def build_story():
     story.append(PageBreak())
 
     # ── 目录 ─────────────────────────────────────────────────────────────────
-    story.extend(section_banner('', '目  录', toc=False))
+    story.extend(cn_banner('', '目  录', toc=False))
     story.append(SP(6))
     toc = TableOfContents()
     toc.dotsMinLevel = 0
     toc.levelStyles = [
-        ParagraphStyle('TOC1', fontName=BASE_FONT, fontSize=11, leading=22,
-                       leftIndent=0, firstLineIndent=0, rightIndent=0,
-                       spaceBefore=0, spaceAfter=0),
+        toc_style(),
     ]
     story.append(toc)
     story.append(PageBreak())
 
     # ── 一、病史记录 ─────────────────────────────────────────────────────────
-    story.extend(section_banner('一', '病史记录'))
+    story.extend(cn_banner('一', '病史记录'))
     story.append(SP(4))
 
     story.extend(sub_header('主诉'))
@@ -384,7 +201,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 二、NPRS ─────────────────────────────────────────────────────────────
-    story.extend(section_banner('二', '数字疼痛评定量表（NPRS）'))
+    story.extend(cn_banner('二', '数字疼痛评定量表（NPRS）'))
     story.append(P('请患者用 0–10 的数值描述疼痛程度。0 = 无痛，10 = 所能想象的最剧烈疼痛。'))
     story.append(SP(6))
 
@@ -440,7 +257,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 三、EQ-5D-5L ─────────────────────────────────────────────────────────
-    story.extend(section_banner('三', '欧洲五维健康量表（EQ-5D-5L）'))
+    story.extend(cn_banner('三', '欧洲五维健康量表（EQ-5D-5L）'))
     story.append(P('请在以下每个维度中，勾选最能描述您<b>今天</b>健康状况的那一项：'))
     story.append(SP(6))
 
@@ -469,7 +286,7 @@ def build_story():
     # ── 五、握力 ─────────────────────────────────────────────────────────────
 
     # ── 四、握力 ─────────────────────────────────────────────────────────────
-    story.extend(section_banner('四', '握力测试（Handgrip Strength）'))
+    story.extend(cn_banner('四', '握力测试（Handgrip Strength）'))
     story.append(P('<b>仪器：</b>Jamar 或同等液压握力计，调整至第二档位。'))
     story.append(P('<b>体位：</b>坐位，肩内收中立位，肘屈 90°，前臂中立位，腕 0–30° 背伸。'))
     story.append(P('<b>方法：</b>左右手交替，各测 3 次，每次间隔 ≥ 30 秒。鼓励最大用力。'))
@@ -495,7 +312,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 五、SPPB ─────────────────────────────────────────────────────────────
-    story.extend(section_banner('五', '简易体能状况量表（SPPB）'))
+    story.extend(cn_banner('五', '简易体能状况量表（SPPB）'))
     story.append(P('SPPB 包含三个子测试，总分 0–12 分。≤ 8 分提示衰弱 / 高跌倒风险。'))
     story.append(SP(6))
 
@@ -582,7 +399,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 六、TUG ──────────────────────────────────────────────────────────────
-    story.extend(section_banner('六', '起立行走计时测试（TUG）'))
+    story.extend(cn_banner('六', '起立行走计时测试（TUG）'))
     story.extend(sub_header('操作步骤'))
     for s in [
         '1. 患者坐在标准扶手椅（座高约 45 cm），背靠椅背。',
@@ -617,7 +434,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 七、2MST（居家适用，替代 2MWT） ─────────────────────────────────────
-    story.extend(section_banner('七', '2分钟原地踏步测试（2MST）— 居家适用'))
+    story.extend(cn_banner('七', '2分钟原地踏步测试（2MST）— 居家适用'))
     story.append(P('2MST 是 2MWT/6MWT 在<b>空间受限</b>（如居家）时的公认替代方案，仅需立足之地，'
                    '用于评估有氧耐力与下肢耐力。源自 Senior Fitness Test。'))
     story.append(SP(6))
@@ -681,7 +498,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 八-A、ODI ────────────────────────────────────────────────────────────
-    story.extend(section_banner('八-A', 'Oswestry 功能障碍指数（ODI）— 腰痛专用'))
+    story.extend(cn_banner('八-A', 'Oswestry 功能障碍指数（ODI）— 腰痛专用'))
     story.append(P('请在每个问题中选择<b>最符合您今天状况</b>的一项。'))
     story.append(SP(6))
     odi_secs = [
@@ -726,7 +543,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 八-B、QuickDASH ──────────────────────────────────────────────────────
-    story.extend(section_banner('八-B', 'QuickDASH 上肢功能评估'))
+    story.extend(cn_banner('八-B', 'QuickDASH 上肢功能评估'))
     story.append(P('请根据<b>过去一周</b>的状况回答。即使左右手程度不同，也请以整体功能作答。'))
     story.append(SP(6))
     story.extend(sub_header('困难程度（1=无困难，5=不能完成）'))
@@ -783,7 +600,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 八-C、ABC Scale ──────────────────────────────────────────────────────
-    story.extend(section_banner('八-C', '活动特异性平衡信心量表（ABC Scale）'))
+    story.extend(cn_banner('八-C', '活动特异性平衡信心量表（ABC Scale）'))
     story.append(P('请评估您完成以下各项活动时，对自己<b>不会失去平衡</b>有多大信心。'))
     story.append(P('从 0%（毫无信心）到 100%（完全有信心）中选择。'))
     story.append(SP(6))
@@ -820,7 +637,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 八-D、Berg 平衡量表 ───────────────────────────────────────────────────
-    story.extend(section_banner('八-D', 'Berg 平衡量表（BBS）'))
+    story.extend(cn_banner('八-D', 'Berg 平衡量表（BBS）'))
     story.append(P('BBS 是老年平衡功能评估的金标准量表，共 14 项，每项 0–4 分，总分 0–56 分。'))
     story.append(P('<b>指导语：</b>请按指令完成以下动作，治疗师根据完成质量评分。需有人保护。'))
     story.append(SP(6))
@@ -883,7 +700,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 九、评估总结 ─────────────────────────────────────────────────────────
-    story.extend(section_banner('九', '评估总结'))
+    story.extend(cn_banner('九', '评估总结'))
     story.extend(sub_header('核心测试结果汇总'))
     summary = [
         [P('<b>测试项目</b>', s_th), P('<b>首次评估\n日期：____</b>', s_th),
@@ -947,7 +764,7 @@ def build_story():
     story.append(PageBreak())
 
     # ── 附录 ─────────────────────────────────────────────────────────────────
-    story.extend(section_banner('', '附录一、MCID 与截断值速查表'))
+    story.extend(cn_banner('', '附录一、MCID 与截断值速查表'))
     mcid = [
         [P('<b>量表/测试</b>', s_th), P('<b>评分范围</b>', s_th), P('<b>MCID</b>', s_th), P('<b>截断值/高风险阈值</b>', s_th)],
         ['NPRS（疼痛）', '0–10', '↓ ≥ 2 分', '—'],
@@ -1012,9 +829,10 @@ def build_story():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='生成老年物理治疗评估工具手册 PDF (v2)')
+    parser = argparse.ArgumentParser(
+        description='生成老年物理治疗评估工具手册 PDF (v3.1)')
     parser.add_argument('-o', '--output',
-                        default='/Users/zonghanyang/AI Agents/Physio/老年物理治疗评估工具手册.pdf',
+                        default=default_output('老年物理治疗评估工具手册.pdf'),
                         help='输出 PDF 路径')
     args = parser.parse_args()
 
@@ -1025,6 +843,8 @@ def main():
                          title='老年物理治疗评估工具手册',
                          author='Physical Therapy Assessment',
                          subject='Geriatric PT Outcome Measures')
+    NumberedCanvas = make_numbered_canvas(
+        '老年物理治疗评估工具手册', '版本 3.1  |  2026')
     doc.multiBuild(build_story(), canvasmaker=NumberedCanvas)
     print(f'PDF 已生成：{out}')
     print(f'文件大小：{os.path.getsize(out) / 1024:.1f} KB')

@@ -1,178 +1,27 @@
 #!/usr/bin/env python3
 """Generate Geriatric PT Outcome Measures Assessment Booklet PDF — ENGLISH (v3.1).
 
-Mirrors the Chinese v3.1 booklet with standard English instrument wording.
-Uses Songti SC (full glyph coverage incl. □ and ≥, with a true Bold subfont).
+Mirrors the Chinese booklet with standard English instrument wording.
+Shared layout engine lives in core.py.
 """
 
 import os
 import argparse
-from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
 from reportlab.lib.units import mm
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, PageBreak,
-                                 Table, TableStyle)
+from reportlab.platypus import Paragraph, Spacer, PageBreak, Table, TableStyle
 from reportlab.platypus.flowables import HRFlowable
 from reportlab.platypus.tableofcontents import TableOfContents
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.pdfmetrics import registerFontFamily
-from reportlab.pdfgen import canvas
 
-# ── Fonts ──
-# Songti SC provides full glyph coverage (ballot box □, ≥, –, curly quotes) AND
-# a true Bold subfont — chosen over built-in Helvetica, which lacks □/≥.
-SONGTI_TTC = '/System/Library/Fonts/Supplemental/Songti.ttc'
-pdfmetrics.registerFont(TTFont('EnR', SONGTI_TTC, subfontIndex=6))   # Regular
-pdfmetrics.registerFont(TTFont('EnB', SONGTI_TTC, subfontIndex=1))   # Bold
-registerFontFamily('EnR', normal='EnR', bold='EnB', italic='EnR', boldItalic='EnB')
-BASE_FONT, BOLD_FONT = 'EnR', 'EnB'
-
-# ── Palette ──
-ACCENT       = colors.HexColor('#1F5C6B')
-ACCENT_DARK  = colors.HexColor('#15414C')
-ACCENT_LIGHT = colors.HexColor('#EAF1F3')
-GREY_LINE    = colors.HexColor('#B8C4C8')
-GREY_TEXT    = colors.HexColor('#555555')
-
-PAGE_W, PAGE_H = A4
-FULL_W = 174 * mm
-
-# ── Styles ──
-def _style(name, fontSize=10, leading=14, alignment=TA_LEFT,
-           textColor=colors.black, fontName=None, **kw):
-    return ParagraphStyle(
-        name, fontName=fontName or BASE_FONT,
-        fontSize=fontSize, leading=leading, alignment=alignment,
-        textColor=textColor,
-        spaceAfter=kw.pop('spaceAfter', 4),
-        spaceBefore=kw.pop('spaceBefore', 2),
-        **kw,
-    )
-
-s_cover_title    = _style('CoverTitle',   fontSize=30, leading=36, alignment=TA_CENTER,
-                          textColor=ACCENT_DARK, spaceAfter=4)
-s_cover_sub      = _style('CoverSub',     fontSize=12, leading=18, alignment=TA_CENTER,
-                          textColor=GREY_TEXT, spaceAfter=20)
-s_banner         = _style('Banner',       fontSize=15, leading=20, alignment=TA_LEFT,
-                          textColor=colors.white, spaceAfter=0, spaceBefore=0)
-s_sub            = _style('Sub',          fontSize=12.5, leading=17, spaceAfter=4,
-                          spaceBefore=6, textColor=ACCENT_DARK)
-s_body           = _style('Body',         fontSize=10, leading=15)
-s_small          = _style('Small',        fontSize=9,  leading=13)
-s_large          = _style('Large',        fontSize=12, leading=18)
-s_th             = _style('TH',           fontSize=9,  leading=12, alignment=TA_CENTER,
-                          textColor=colors.white, fontName=BOLD_FONT)
-s_td             = _style('TD',           fontSize=9,  leading=12)
-s_td_c           = _style('TDc',          fontSize=9,  leading=12, alignment=TA_CENTER)
-s_note           = _style('Note',         fontSize=8,  leading=11, textColor=GREY_TEXT)
-s_field          = _style('Field',        fontSize=10, leading=16)
-s_strip          = _style('Strip',        fontSize=11, leading=15,
-                          textColor=colors.white, fontName=BOLD_FONT, alignment=TA_CENTER)
-
-# ── Helpers ──
-def P(text, style=None): return Paragraph(text, style or s_body)
-def SP(h=6):             return Spacer(1, h)
-def HR(color=GREY_LINE, t=0.5, after=6):
-    return HRFlowable(width='100%', thickness=t, color=color, spaceAfter=after)
-
-def section_banner(num, text, toc=True):
-    title = f'{num}. {text}' if num else text
-    cell = Paragraph(f'<b>{title}</b>', s_banner)
-    t = Table([[cell]], colWidths=[FULL_W])
-    t.setStyle(TableStyle([
-        ('BACKGROUND',    (0, 0), (-1, -1), ACCENT),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 10),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 10),
-        ('TOPPADDING',    (0, 0), (-1, -1), 7),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
-        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    if toc:
-        t.toc_entry = (0, title)
-    return [t, SP(8)]
-
-def sub_header(text):
-    return [P(f'<b>{text}</b>', s_sub),
-            HRFlowable(width='100%', thickness=0.8, color=ACCENT, spaceAfter=4)]
-
-def note(text):  return P(text, s_note)
-
-def cols(*weights):
-    total = sum(weights)
-    return [w / total * FULL_W for w in weights]
-
-def make_table(data, col_widths=None, header_rows=1, zebra=True):
-    t = Table(data, colWidths=col_widths, repeatRows=header_rows)
-    cmds = [
-        ('GRID',          (0, 0), (-1, -1), 0.5, GREY_LINE),
-        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING',    (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
-        ('FONTNAME',      (0, 0), (-1, -1), BASE_FONT),
-    ]
-    if header_rows > 0:
-        cmds += [
-            ('BACKGROUND', (0, 0), (-1, header_rows - 1), ACCENT),
-            ('FONTNAME',   (0, 0), (-1, header_rows - 1), BOLD_FONT),
-            ('ALIGN',      (0, 0), (-1, header_rows - 1), 'CENTER'),
-            ('TEXTCOLOR',  (0, 0), (-1, header_rows - 1), colors.white),
-            ('LINEBELOW',  (0, header_rows - 1), (-1, header_rows - 1), 1.4, ACCENT_DARK),
-            ('TOPPADDING', (0, 0), (-1, header_rows - 1), 6),
-            ('BOTTOMPADDING',(0,0), (-1, header_rows - 1), 6),
-        ]
-    if zebra:
-        start = header_rows
-        for r in range(start, len(data)):
-            if (r - start) % 2 == 1:
-                cmds.append(('BACKGROUND', (0, r), (-1, r), ACCENT_LIGHT))
-    t.setStyle(TableStyle(cmds))
-    return t
-
-# ── Page numbering canvas ──
-class NumberedCanvas(canvas.Canvas):
-    def __init__(self, *args, **kwargs):
-        canvas.Canvas.__init__(self, *args, **kwargs)
-        self._saved = []
-
-    def showPage(self):
-        self._saved.append(dict(self.__dict__))
-        self._startPage()
-
-    def save(self):
-        total = len(self._saved)
-        for state in self._saved:
-            self.__dict__.update(state)
-            self._draw_footer(total)
-            canvas.Canvas.showPage(self)
-        canvas.Canvas.save(self)
-
-    def _draw_footer(self, total):
-        self.setStrokeColor(ACCENT)
-        self.setLineWidth(0.6)
-        self.line(15 * mm, 16 * mm, PAGE_W - 15 * mm, 16 * mm)
-        self.setFont(BASE_FONT, 8)
-        self.setFillColor(GREY_TEXT)
-        self.drawString(15 * mm, 11 * mm, 'Geriatric PT Assessment Booklet')
-        self.drawCentredString(PAGE_W / 2, 11 * mm, f'— {self._pageNumber} / {total} —')
-        self.drawRightString(PAGE_W - 15 * mm, 11 * mm, 'Version 3.1 EN  |  2026')
-        self.setFillColor(colors.black)
-
-
-class TocDocTemplate(SimpleDocTemplate):
-    def afterFlowable(self, flowable):
-        if hasattr(flowable, 'toc_entry'):
-            level, label = flowable.toc_entry
-            self.notify('TOCEntry', (level, label, self.page))
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  DOCUMENT
-# ═══════════════════════════════════════════════════════════════════════════
+from core import (
+    ACCENT, ACCENT_DARK, ACCENT_LIGHT, GREY_LINE, GREY_TEXT,
+    BASE_FONT, BOLD_FONT, PAGE_W, PAGE_H, FULL_W,
+    s_cover_title, s_cover_sub, s_banner, s_sub, s_body, s_small,
+    s_large, s_th, s_td, s_td_c, s_note, s_field, s_strip,
+    P, SP, HR, note, section_banner, sub_header, cols, make_table,
+    make_numbered_canvas, TocDocTemplate, toc_style, default_output,
+)
 
 def build_story():
     story = []
@@ -227,9 +76,7 @@ def build_story():
     toc = TableOfContents()
     toc.dotsMinLevel = 0
     toc.levelStyles = [
-        ParagraphStyle('TOC1', fontName=BASE_FONT, fontSize=11, leading=22,
-                       leftIndent=0, firstLineIndent=0, rightIndent=0,
-                       spaceBefore=0, spaceAfter=0),
+        toc_style(),
     ]
     story.append(toc)
     story.append(PageBreak())
@@ -968,9 +815,10 @@ def build_story():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate Geriatric PT Assessment Booklet PDF — English (v3.1)')
+    parser = argparse.ArgumentParser(
+        description='Generate Geriatric PT Assessment Booklet PDF — English (v3.1)')
     parser.add_argument('-o', '--output',
-                        default='/Users/zonghanyang/AI Agents/Physio/Geriatric_PT_Assessment_Booklet_EN.pdf',
+                        default=default_output('Geriatric_PT_Assessment_Booklet_EN.pdf'),
                         help='Output PDF path')
     args = parser.parse_args()
 
@@ -981,6 +829,8 @@ def main():
                          title='Geriatric Physical Therapy Assessment Booklet',
                          author='Physical Therapy Assessment',
                          subject='Geriatric PT Outcome Measures (EN)')
+    NumberedCanvas = make_numbered_canvas(
+        'Geriatric PT Assessment Booklet', 'Version 3.1 EN  |  2026')
     doc.multiBuild(build_story(), canvasmaker=NumberedCanvas)
     print(f'PDF generated: {out}')
     print(f'Size: {os.path.getsize(out) / 1024:.1f} KB')
