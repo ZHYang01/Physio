@@ -22,6 +22,7 @@ from core import (
     P, SP, HR, note, section_banner, sub_header, cols, make_table,
     make_numbered_canvas, TocDocTemplate, toc_style, default_output,
 )
+from exercises import build_exercise_library
 
 def build_story():
     story = []
@@ -794,7 +795,12 @@ def build_story():
     ]
     story.append(make_table(ex, col_widths=cols(3, 2, 2, 2, 2.5, 3)))
     story.append(SP(6))
-    story.extend(sub_header('Appendix 4 — Suggested Assessment Flow (initial ~40–60 min)'))
+
+    # ── Home Exercise Library ──
+    story.append(PageBreak())
+    story.extend(build_exercise_library('en'))
+    story.append(PageBreak())
+    story.extend(sub_header('Appendix 5 — Suggested Assessment Flow (initial ~40–60 min)'))
     flow = [
         [P('<b>#</b>', s_th), P('<b>Step</b>', s_th), P('<b>~Time</b>', s_th)],
         ['1', 'Informed consent & history (patient may complete questionnaires in waiting room)', '5 min'],

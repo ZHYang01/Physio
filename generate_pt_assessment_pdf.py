@@ -21,6 +21,7 @@ from core import (
     P, SP, HR, note, section_banner, sub_header, cols, make_table,
     make_numbered_canvas, TocDocTemplate, toc_style, default_output,
 )
+from exercises import build_exercise_library
 
 # CN section banners use、 separator instead of ". "
 def cn_banner(num, text, toc=True):
@@ -808,7 +809,12 @@ def build_story():
     ]
     story.append(make_table(ex, col_widths=cols(3, 2, 2, 2, 2.5, 3)))
     story.append(SP(6))
-    story.extend(sub_header('附录四、评估流程建议（首次评估约 40–50 分钟）'))
+
+    # ── 居家运动库 ──
+    story.append(PageBreak())
+    story.extend(build_exercise_library('cn'))
+    story.append(PageBreak())
+    story.extend(sub_header('附录五、评估流程建议（首次评估约 40–50 分钟）'))
     flow = [
         [P('<b>顺序</b>', s_th), P('<b>内容</b>', s_th), P('<b>大约时间</b>', s_th)],
         ['1', '签署知情同意，采集病史（可由患者在候诊时完成问卷）', '5 min'],
